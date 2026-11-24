@@ -19,6 +19,8 @@ import { LAMPORTS_PER_SOL } from './vendor/makefun-bot.ts';
 const SOL = Number(LAMPORTS_PER_SOL);
 
 export interface Params {
+  /** Largest single wallet's share of the window's buy SOL. */
+  maxBuyerShare: number;
   /** Entry lookback, in slots. */
   window: number;
   /** Minimum net buy SOL (buys minus sells) over the window. */
@@ -82,6 +84,7 @@ export interface Params {
 }
 
 export const DEFAULT_PARAMS: Params = {
+  maxBuyerShare: 0.6,
   window: 30,
   minNetSol: 1.0,
   minBuys: 5,
@@ -94,20 +97,20 @@ export const DEFAULT_PARAMS: Params = {
   maxRqSol: 40,
   minAge: 10,
   maxAge: 900,
-  firstBuySol: 0.05,
+  firstBuySol: 0.08,
   addBuySol: 0.05,
-  maxStakeSol: 0.05,
+  maxStakeSol: 0.08,
   minBuySol: 0.02,
   addStep: 0.02,
   addNetSol: 0.3,
   buySlipBps: 500,
   stopLoss: 0.08,
-  trailArm: 0.15,
-  trail: 0.05,
-  takeProfit: 0.2,
+  trailArm: 0.2,
+  trail: 0.08,
+  takeProfit: 0,
   fadeNetSol: -0.15,
   bigSellSol: 0.5,
-  maxHold: 400,
+  maxHold: 900,
   holdIfUp: 0.2,
   cooldown: 300,
   maxEntries: 1,
@@ -177,6 +180,7 @@ export function createStrategy(params: Params): Bot {
     netSol: number;
     buys: number;
     buyers: number;
+    maxBuyerShare: number;
     priceStart: number;
     priceNow: number;
     high: number;
@@ -187,7 +191,9 @@ export function createStrategy(params: Params): Bot {
     let netOld = 0n;
     let netNew = 0n;
     let buys = 0;
+    let buyLamports = 0n;
     const buyers = new Set<string>();
+    const buyByUser = new Map<string, bigint>();
     let priceStart = 0;
     let high = 0;
     let seen = 0;
@@ -204,6 +210,8 @@ export function createStrategy(params: Params): Bot {
       if (t.isBuy) {
         buys++;
         buyers.add(t.user);
+        buyLamports += t.solLamports;
+        buyByUser.set(t.user, (buyByUser.get(t.user) ?? 0n) + t.solLamports);
       }
     }
     if (seen < 2) return null;
@@ -211,7 +219,13 @@ export function createStrategy(params: Params): Bot {
     const netOldSol = Number(netOld) / SOL;
     const netNewSol = Number(netNew) / SOL;
     const accelOk = netOldSol <= 0 ? netNewSol > 0 : netNewSol >= params.accel * netOldSol;
-    return { netSol, buys, buyers: buyers.size, priceStart, priceNow: c.tape[c.tape.length - 1].price, high, accelOk };
+    let maxBuyerShare = 0;
+    if (buyLamports > 0n) {
+      let biggest = 0n;
+      for (const v of buyByUser.values()) if (v > biggest) biggest = v;
+      maxBuyerShare = Number(biggest) / Number(buyLamports);
+    }
+    return { netSol, buys, buyers: buyers.size, maxBuyerShare, priceStart, priceNow: c.tape[c.tape.length - 1].price, high, accelOk };
   }
 
   return {
@@ -346,6 +360,7 @@ export function createStrategy(params: Params): Bot {
           if (stats.netSol < params.minNetSol) continue;
           if (stats.buys < params.minBuys) continue;
           if (stats.buyers < params.minBuyers) continue;
+          if (stats.maxBuyerShare > params.maxBuyerShare) continue;
           if (up < params.minUp || up > params.maxUp) continue;
           if (price < params.nearHigh * stats.high) continue;
           if (!stats.accelOk) continue;
