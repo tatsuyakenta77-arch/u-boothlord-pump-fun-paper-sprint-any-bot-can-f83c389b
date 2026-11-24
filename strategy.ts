@@ -107,13 +107,13 @@ export const DEFAULT_PARAMS: Params = {
   addStep: 0.02,
   addNetSol: 0.3,
   buySlipBps: 500,
-  stopLoss: 0.1,
-  trailArm: 0.25,
+  stopLoss: 0.08,
+  trailArm: 0.3,
   trail: 0.1,
-  takeProfit: 0.2,
+  takeProfit: 0.35,
   fadeNetSol: -0.3,
   bigSellSol: 1.0,
-  maxHold: 600,
+  maxHold: 900,
   holdIfUp: 0.25,
   cooldown: 300,
   maxEntries: 2,
@@ -377,13 +377,13 @@ export function createStrategy(params: Params): Bot {
             // Buy the bounce: the coin ran, dumped >=30% off its high, and is
             // stabilising with buy flow returning — never catch a falling knife.
             if (c.highPrice <= 0 || c.firstPrice <= 0) continue;
-            if (price > 0.7 * c.highPrice) continue;
-            if (c.highPrice < 1.5 * c.firstPrice) continue;
+            if (price > 0.65 * c.highPrice) continue;
+            if (c.highPrice < 2.0 * c.firstPrice) continue;
             if (batch.slot - c.highSlot > 1800) continue;
             const rev = windowStats(c, batch.slot, 15);
             if (rev === null) continue;
-            if (rev.buys < 2 || rev.netSol < 0) continue;
-            if (price < 0.97 * rev.low) continue;
+            if (rev.buys < 2 || rev.netSol < 0.1) continue;
+            if (price < 1.03 * rev.low) continue;
           } else {
             // Fresh momentum entry: the surge must be real on every dimension.
             if (stats.netSol < params.minNetSol) continue;
