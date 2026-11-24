@@ -19,6 +19,8 @@ import { LAMPORTS_PER_SOL } from './vendor/makefun-bot.ts';
 const SOL = Number(LAMPORTS_PER_SOL);
 
 export interface Params {
+  /** 'momentum': buy surges. 'reversion': buy the bounce after a deep drop from the high. */
+  mode: 'momentum' | 'reversion';
   /** Largest single wallet's share of the window's buy SOL. */
   maxBuyerShare: number;
   /** Entry lookback, in slots. */
@@ -84,35 +86,36 @@ export interface Params {
 }
 
 export const DEFAULT_PARAMS: Params = {
+  mode: 'reversion',
   maxBuyerShare: 0.6,
-  window: 15,
-  minNetSol: 0.3,
-  minBuys: 3,
-  minBuyers: 3,
-  minUp: 0.01,
-  maxUp: 2.0,
-  accel: 0.8,
-  nearHigh: 0.85,
+  window: 30,
+  minNetSol: 1.0,
+  minBuys: 5,
+  minBuyers: 5,
+  minUp: 0.02,
+  maxUp: 0.6,
+  accel: 1.0,
+  nearHigh: 0.95,
   minRqSol: 1,
   maxRqSol: 80,
-  minAge: 5,
-  maxAge: 1200,
-  firstBuySol: 0.02,
-  addBuySol: 0.04,
-  maxStakeSol: 0.3,
-  minBuySol: 0.01,
-  addStep: 0.03,
-  addNetSol: 0.2,
-  buySlipBps: 1000,
-  stopLoss: 0.12,
-  trailArm: 0.5,
-  trail: 0.15,
-  takeProfit: 0,
-  fadeNetSol: -0.5,
+  minAge: 10,
+  maxAge: 2400,
+  firstBuySol: 0.08,
+  addBuySol: 0.05,
+  maxStakeSol: 0.08,
+  minBuySol: 0.02,
+  addStep: 0.02,
+  addNetSol: 0.3,
+  buySlipBps: 500,
+  stopLoss: 0.1,
+  trailArm: 0.25,
+  trail: 0.1,
+  takeProfit: 0.2,
+  fadeNetSol: -0.3,
   bigSellSol: 1.0,
-  maxHold: 2400,
-  holdIfUp: 0.5,
-  cooldown: 150,
+  maxHold: 600,
+  holdIfUp: 0.25,
+  cooldown: 300,
   maxEntries: 2,
   probeAfterSlots: 30000,
   targetCoins: 30,
@@ -141,6 +144,10 @@ interface CoinState {
   boughtLamports: bigint;
   /** A probe buy is waiting to be closed. */
   probeOpen: boolean;
+  /** First traded price, trailing high price, and the slot of that high. */
+  firstPrice: number;
+  highPrice: number;
+  highSlot: number;
 }
 
 function priceOf(vq: bigint, vt: bigint): number {
@@ -168,14 +175,17 @@ export function createStrategy(params: Params): Bot {
         peakValueLamports: 0n,
         boughtLamports: 0n,
         probeOpen: false,
+        firstPrice: 0,
+        highPrice: 0,
+        highSlot: 0,
       };
       coins.set(mint, c);
     }
     return c;
   }
 
-  /** Stats over the trailing window for one coin, or null when the tape is too thin. */
-  function windowStats(c: CoinState, nowSlot: number): {
+  /** Stats over a trailing window of `windowSlots` slots, or null when the tape is too thin. */
+  function windowStats(c: CoinState, nowSlot: number, windowSlots: number): {
     netSol: number;
     buys: number;
     buyers: number;
@@ -183,9 +193,10 @@ export function createStrategy(params: Params): Bot {
     priceStart: number;
     priceNow: number;
     high: number;
+    low: number;
     accelOk: boolean;
   } | null {
-    const from = nowSlot - params.window;
+    const from = nowSlot - windowSlots;
     let netLamports = 0n;
     let netOld = 0n;
     let netNew = 0n;
@@ -195,13 +206,15 @@ export function createStrategy(params: Params): Bot {
     const buyByUser = new Map<string, bigint>();
     let priceStart = 0;
     let high = 0;
+    let low = Number.POSITIVE_INFINITY;
     let seen = 0;
-    const mid = from + params.window / 2;
+    const mid = from + windowSlots / 2;
     for (const t of c.tape) {
       if (t.slot < from) continue;
       seen++;
       if (seen === 1) priceStart = t.price;
       if (t.price > high) high = t.price;
+      if (t.price < low) low = t.price;
       const signed = t.isBuy ? t.solLamports : -t.solLamports;
       netLamports += signed;
       if (t.slot < mid) netOld += signed;
@@ -224,7 +237,7 @@ export function createStrategy(params: Params): Bot {
       for (const v of buyByUser.values()) if (v > biggest) biggest = v;
       maxBuyerShare = Number(biggest) / Number(buyLamports);
     }
-    return { netSol, buys, buyers: buyers.size, maxBuyerShare, priceStart, priceNow: c.tape[c.tape.length - 1].price, high, accelOk };
+    return { netSol, buys, buyers: buyers.size, maxBuyerShare, priceStart, priceNow: c.tape[c.tape.length - 1].price, high, low, accelOk };
   }
 
   return {
@@ -279,6 +292,11 @@ export function createStrategy(params: Params): Bot {
             user: e.user,
             price,
           });
+          if (c.firstPrice === 0) c.firstPrice = price;
+          if (price > c.highPrice) {
+            c.highPrice = price;
+            c.highSlot = e.slot;
+          }
           // Prune anything older than a few windows; tapes stay short.
           while (c.tape.length > 0 && c.tape[0].slot < batch.slot - params.window * 15) c.tape.shift();
           traded.add(e.mint);
@@ -313,7 +331,7 @@ export function createStrategy(params: Params): Bot {
         else if (batch.slot - c.entrySlot >= params.maxHold && value < (cost * BigInt(Math.round((1 + params.holdIfUp) * 1000))) / 1000n) {
           reason = 'max-hold';
         } else {
-          const stats = windowStats(c, batch.slot);
+          const stats = windowStats(c, batch.slot, params.window);
           if (stats !== null && stats.netSol < params.fadeNetSol) reason = 'fade';
         }
         if (reason === null) continue;
@@ -347,7 +365,7 @@ export function createStrategy(params: Params): Bot {
         const holding = state.positions.get(mint);
         const realSol = Number(curve.real_quote_reserves) / SOL;
         if (realSol < params.minRqSol || realSol > params.maxRqSol) continue;
-        const stats = windowStats(c, batch.slot);
+        const stats = windowStats(c, batch.slot, params.window);
         if (stats === null) continue;
         const price = priceOf(curve.virtual_quote_reserves, curve.virtual_token_reserves);
         if (price <= 0 || stats.priceStart <= 0) continue;
@@ -355,14 +373,27 @@ export function createStrategy(params: Params): Bot {
         const cap = state.maxBuyLamports(mint);
 
         if (holding === undefined) {
-          // Fresh entry: the surge must be real on every dimension.
-          if (stats.netSol < params.minNetSol) continue;
-          if (stats.buys < params.minBuys) continue;
-          if (stats.buyers < params.minBuyers) continue;
-          if (stats.maxBuyerShare > params.maxBuyerShare) continue;
-          if (up < params.minUp || up > params.maxUp) continue;
-          if (price < params.nearHigh * stats.high) continue;
-          if (!stats.accelOk) continue;
+          if (params.mode === 'reversion') {
+            // Buy the bounce: the coin ran, dumped >=30% off its high, and is
+            // stabilising with buy flow returning — never catch a falling knife.
+            if (c.highPrice <= 0 || c.firstPrice <= 0) continue;
+            if (price > 0.7 * c.highPrice) continue;
+            if (c.highPrice < 1.5 * c.firstPrice) continue;
+            if (batch.slot - c.highSlot > 1800) continue;
+            const rev = windowStats(c, batch.slot, 15);
+            if (rev === null) continue;
+            if (rev.buys < 2 || rev.netSol < 0) continue;
+            if (price < 0.97 * rev.low) continue;
+          } else {
+            // Fresh momentum entry: the surge must be real on every dimension.
+            if (stats.netSol < params.minNetSol) continue;
+            if (stats.buys < params.minBuys) continue;
+            if (stats.buyers < params.minBuyers) continue;
+            if (stats.maxBuyerShare > params.maxBuyerShare) continue;
+            if (up < params.minUp || up > params.maxUp) continue;
+            if (price < params.nearHigh * stats.high) continue;
+            if (!stats.accelOk) continue;
+          }
           let amount = BigInt(Math.round(params.firstBuySol * SOL));
           if (amount > cap) amount = cap;
           if (amount < BigInt(Math.round(params.minBuySol * SOL))) continue;
