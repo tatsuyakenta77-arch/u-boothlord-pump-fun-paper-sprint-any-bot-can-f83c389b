@@ -57,6 +57,8 @@ export interface Params {
   stopLoss: number;
   trailArm: number;
   trail: number;
+  /** Sell the whole position once it is up at least this much (0 = off). */
+  takeProfit: number;
   /** Exit when net SOL over the window falls below this. */
   fadeNetSol: number;
   /** Exit on any single recorded sell of at least this many SOL. */
@@ -80,33 +82,35 @@ export interface Params {
 }
 
 export const DEFAULT_PARAMS: Params = {
-  window: 40,
-  minNetSol: 0.5,
-  minBuys: 4,
-  minBuyers: 4,
-  minUp: 0.04,
-  maxUp: 1.0,
-  accel: 0.8,
-  nearHigh: 0.9,
+  window: 30,
+  minNetSol: 1.0,
+  minBuys: 5,
+  minBuyers: 5,
+  minUp: 0.02,
+  maxUp: 0.6,
+  accel: 1.0,
+  nearHigh: 0.95,
   minRqSol: 2,
-  maxRqSol: 60,
-  minAge: 25,
-  maxAge: 1500,
+  maxRqSol: 40,
+  minAge: 10,
+  maxAge: 900,
   firstBuySol: 0.05,
   addBuySol: 0.05,
-  maxStakeSol: 0.2,
+  maxStakeSol: 0.05,
   minBuySol: 0.02,
   addStep: 0.02,
   addNetSol: 0.3,
   buySlipBps: 500,
-  stopLoss: 0.15,
-  trailArm: 0.25,
-  trail: 0.1,
-  fadeNetSol: -0.3,
+  stopLoss: 0.08,
+  trailArm: 0.15,
+  trail: 0.05,
+  takeProfit: 0.2,
+  fadeNetSol: -0.15,
   bigSellSol: 0.5,
-  maxHold: 1200,
-  holdIfUp: 0.25,
+  maxHold: 400,
+  holdIfUp: 0.2,
   cooldown: 300,
+  maxEntries: 1,
   maxEntries: 2,
   probeAfterSlots: 30000,
   targetCoins: 30,
@@ -286,6 +290,7 @@ export function createStrategy(params: Params): Bot {
 
         let reason: string | null = null;
         if (value <= (cost * BigInt(Math.round((1 - params.stopLoss) * 1000))) / 1000n) reason = 'stop-loss';
+        else if (params.takeProfit > 0 && value >= (cost * BigInt(Math.round((1 + params.takeProfit) * 1000))) / 1000n) reason = 'take-profit';
         else if (
           value >= (cost * BigInt(Math.round((1 + params.trailArm) * 1000))) / 1000n &&
           value <= (c.peakValueLamports * BigInt(Math.round((1 - params.trail) * 1000))) / 1000n
